@@ -34,4 +34,7 @@
 #  Public constants:
 _kCBLDatabaseChangeNotification
 _kCBLDatabaseChangesUserInfoKey
-_kCBLReplicationStatusChangeNotification
+_kCBLReplicatorChangeNotification
+_kCBLReplicatorStatusUserInfoKey;
+_kCBLReplicatorErrorUserInfoKey;
+

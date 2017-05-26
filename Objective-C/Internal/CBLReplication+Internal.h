@@ -11,6 +11,6 @@
 @interface CBLReplication ()
 
 // Used by Swift bridge
-@property (strong, nonatomic) id<CBLReplicationDelegate> delegateBridge;
+// @property (strong, nonatomic) id<CBLReplicatorChangeListener> delegateBridge;
 
 @end

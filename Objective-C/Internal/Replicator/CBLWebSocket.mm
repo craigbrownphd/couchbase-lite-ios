@@ -9,7 +9,7 @@
 #import "CBLWebSocket.h"
 #import "CBLHTTPLogic.h"
 #import "CBLCoreBridge.h"
-#import "CBLReplication.h"  // for the options constants
+#import "CBLReplicatorConfiguration.h"
 #import "CBLLog.h"
 #import "c4Socket.h"
 #import <CommonCrypto/CommonDigest.h>

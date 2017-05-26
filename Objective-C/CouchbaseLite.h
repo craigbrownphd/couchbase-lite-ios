@@ -37,3 +37,5 @@ FOUNDATION_EXPORT const unsigned char CouchbaseLiteVersionString[];
 #import "CBLReadOnlyDocument.h"
 #import "CBLReadOnlyFragment.h"
 #import "CBLReplication.h"
+#import "CBLReplicatorConfiguration.h"
+

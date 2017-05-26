@@ -17,21 +17,46 @@
 #import "CBLWebSocket.h"
 #import "FleeceCpp.hh"
 
+
+#import "CBLReplicatorConfiguration.h"
+
 using namespace fleece;
 using namespace fleeceapi;
 
 static C4LogDomain kCBLSyncLogDomain;
 
+NSString* const kCBLReplicatorChangeNotification = @"kCBLReplicatorChangeNotification";
+NSString* const kCBLReplicatorStatusUserInfoKey = @"kCBLReplicatorStatusUserInfoKey";
+NSString* const kCBLReplicatorErrorUserInfoKey = @"kCBLReplicatorErrorUserInfoKey";
 
-NSString* const kCBLReplicationStatusChangeNotification = @"CBLReplicationStatusChange";
 
-NSString* const kCBLReplicationAuthOption   = @"auth";
-NSString* const kCBLReplicationAuthUserName = @"username";
-NSString* const kCBLReplicationAuthPassword = @"password";
+@interface CBLReplicatorStatus ()
 
+- (instancetype) initWithActivity: (CBLReplicatorActivityLevel)activity
+                         progress: (CBLReplicatorProgress)progress;
+@end
+
+
+@implementation CBLReplicatorStatus
+
+@synthesize activity=_activity, progress=_progress;
+
+
+- (instancetype) initWithActivity: (CBLReplicatorActivityLevel)activity
+                         progress: (CBLReplicatorProgress)progress
+{
+    self = [super init];
+    if (self) {
+        _activity = activity;
+        _progress = progress;
+    }
+    return self;
+}
+
+@end
 
 @interface CBLReplication ()
-@property (readwrite, nonatomic) CBLReplicationStatus status;
+@property (readwrite, nonatomic) CBLReplicatorStatus* status;
 @property (readwrite, nonatomic) NSError* lastError;
 @end
 
@@ -40,11 +65,11 @@ NSString* const kCBLReplicationAuthPassword = @"password";
 {
     C4Replicator* _repl;
     AllocedDict _responseHeaders;   //TODO: Do something with these (for auth)
+    NSError* _lastError;
 }
 
-@synthesize database=_database, remoteURL=_remoteURL, otherDatabase=_otherDB;
-@synthesize delegate=_delegate, delegateBridge=_delegateBridge, options=_options;
-@synthesize push=_push, pull=_pull, continuous=_continuous, status=_status, lastError=_lastError;
+@synthesize config=_config;
+@synthesize status=_status, lastError=_lastError;
 
 
 + (void) initialize {
@@ -55,18 +80,18 @@ NSString* const kCBLReplicationAuthPassword = @"password";
 }
 
 
-- (instancetype) initWithDatabase: (CBLDatabase*)db
-                        remoteURL: (NSURL*)remoteURL
-                    otherDatabase: (CBLDatabase*)otherDB
-{
+- (instancetype) initWithConfig: (CBLReplicatorConfiguration *)config {
     self = [super init];
     if (self) {
-        _database = db;
-        _remoteURL = remoteURL;
-        _otherDB = otherDB;
-        _push = _pull = YES;
+        NSParameterAssert(config.database != nil && config.target != nil);
+        _config = [config copy];
     }
     return self;
+}
+
+
+- (CBLReplicatorConfiguration*) config {
+    return [_config copy];
 }
 
 
@@ -78,10 +103,10 @@ NSString* const kCBLReplicationAuthPassword = @"password";
 - (NSString*) description {
     return [NSString stringWithFormat: @"%@[%s%s%s %@]",
             self.class,
-            (_pull ? "<" : ""),
-            (_continuous ? "*" : "-"),
-            (_push ? ">" : ""),
-            (_remoteURL ? _remoteURL.absoluteString : _otherDB.name)];
+            (isPull(_config.replicatorType) ? "<" : ""),
+            (_config.continuous ? "*" : "-"),
+            (isPush(_config.replicatorType)  ? ">" : ""),
+            _config.target];
 }
 
 
@@ -91,34 +116,57 @@ static C4ReplicatorMode mkmode(BOOL active, BOOL continuous) {
 }
 
 
+static BOOL isPush(CBLReplicatorType type) {
+    return type == kCBLPushAndPull || type == kCBLPush;
+}
+
+
+static BOOL isPull(CBLReplicatorType type) {
+    return type == kCBLPushAndPull || type == kCBLPull;
+}
+
+
 - (void) start {
     if (_repl) {
         CBLWarn(Sync, @"%@ has already started", self);
         return;
     }
-    NSAssert(_push || _pull, @"Replication must either push or pull, or both");
-    // Fill out the C4Address:
-    CBLStringBytes scheme(_remoteURL.scheme);
-    CBLStringBytes host(_remoteURL.host);
-    CBLStringBytes path(_remoteURL.path.stringByDeletingLastPathComponent);
-    CBLStringBytes dbName(_remoteURL.path.lastPathComponent);
-    C4Address addr {
-        .scheme = scheme,
-        .hostname = host,
-        .port = (uint16_t)_remoteURL.port.shortValue,
-        .path = path
-    };
-
+    
+    Assert(_config.database);
+    Assert(_config.target);
+    
+    // Target:
+    C4Address addr;
+    CBLDatabase* otherDB;
+    
+    NSURL* remoteURL = _config.target.url;
+    CBLStringBytes dbName(remoteURL.path.lastPathComponent);
+    if (remoteURL) {
+        // Fill out the C4Address:
+        CBLStringBytes scheme(remoteURL.scheme);
+        CBLStringBytes host(remoteURL.host);
+        CBLStringBytes path(remoteURL.path.stringByDeletingLastPathComponent);
+        addr = {
+            .scheme = scheme,
+            .hostname = host,
+            .port = (uint16_t)remoteURL.port.shortValue,
+            .path = path
+        };
+    } else {
+        otherDB = _config.target.database;
+        Assert(otherDB);
+    }
+    
     // If the URL has a hardcoded username/password, add them as an "auth" option:
-    NSDictionary* options = _options;
-    NSString* username = _remoteURL.user;
+    NSDictionary* options = _config.options;
+    NSString* username = remoteURL.user;
     if (username && !options[kCBLReplicationAuthOption]) {
         NSMutableDictionary *auth = [NSMutableDictionary new];
         auth[kCBLReplicationAuthUserName] = username;
-        auth[kCBLReplicationAuthPassword] = _remoteURL.password;
-        NSMutableDictionary *nuOptions = options ? [options mutableCopy] :  [NSMutableDictionary new];
-        nuOptions[kCBLReplicationAuthOption] = auth;
-        options = nuOptions;
+        auth[kCBLReplicationAuthPassword] = remoteURL.password;
+        NSMutableDictionary *nuOpts = options ? [options mutableCopy] : [NSMutableDictionary new];
+        nuOpts[kCBLReplicationAuthOption] = auth;
+        options = nuOpts;
     }
 
     // Encode the options:
@@ -129,16 +177,21 @@ static C4ReplicatorMode mkmode(BOOL active, BOOL continuous) {
         optionsFleece = enc.finish();
     }
 
+    // Push / Pull / Continuous:
+    BOOL push = isPush(_config.replicatorType);
+    BOOL pull = isPull(_config.replicatorType);
+    BOOL continuos = _config.continuous;
+    
     // Create a C4Replicator:
     C4Error err;
-    _repl = c4repl_new(_database.c4db, addr, dbName, _otherDB.c4db,
-                       mkmode(_push, _continuous), mkmode(_pull, _continuous),
+    _repl = c4repl_new(_config.database.c4db, addr, dbName, otherDB.c4db,
+                       mkmode(push, continuos), mkmode(pull, continuos),
                        {optionsFleece.buf, optionsFleece.size},
                        &statusChanged, (__bridge void*)self, &err);
     C4ReplicatorStatus status;
     if (_repl) {
         status = c4repl_getStatus(_repl);
-        [_database.activeReplications addObject: self];     // keeps me from being dealloced
+        [_config.database.activeReplications addObject: self];     // keeps me from being dealloced
     } else {
         status = {kC4Stopped, {}, err};
     }
@@ -156,7 +209,7 @@ static C4ReplicatorMode mkmode(BOOL active, BOOL continuous) {
 
 
 static void statusChanged(C4Replicator *repl, C4ReplicatorStatus status, void *context) {
-    dispatch_async(dispatch_get_main_queue(), ^{        //TODO: Support other queues
+    dispatch_async(dispatch_get_main_queue(), ^{ //TODO: Support other queues
         [(__bridge CBLReplication*)context c4StatusChanged: status];
     });
 }
@@ -164,12 +217,12 @@ static void statusChanged(C4Replicator *repl, C4ReplicatorStatus status, void *c
 
 - (void) c4StatusChanged: (C4ReplicatorStatus)status {
     [self setC4Status: status];
-
-    id<CBLReplicationDelegate> delegate = _delegate;
-    if ([delegate respondsToSelector: @selector(replication:didChangeStatus:)])
-        [delegate replication: self didChangeStatus: _status];
+    
+    NSMutableDictionary* userinfo = [NSMutableDictionary new];
+    userinfo[kCBLReplicatorStatusUserInfoKey] = self.status;
+    userinfo[kCBLReplicatorErrorUserInfoKey] = self.lastError;
     [NSNotificationCenter.defaultCenter
-                    postNotificationName: kCBLReplicationStatusChangeNotification object: self];
+        postNotificationName: kCBLReplicatorChangeNotification object: self userInfo: userinfo];
 
     if (!_responseHeaders) {
         C4Slice h = c4repl_getResponseHeaders(_repl);
@@ -180,9 +233,7 @@ static void statusChanged(C4Replicator *repl, C4ReplicatorStatus status, void *c
         // Stopped:
         c4repl_free(_repl);
         _repl = nullptr;
-        if ([delegate respondsToSelector: @selector(replication:didStopWithError:)])
-            [delegate replication: self didStopWithError: _lastError];
-        [_database.activeReplications removeObject: self];      // this is likely to dealloc me
+        [_config.database.activeReplications removeObject: self]; // this is likely to dealloc me
     }
 }
 
@@ -193,48 +244,28 @@ static void statusChanged(C4Replicator *repl, C4ReplicatorStatus status, void *c
         convertError(state.error, &error);
     if (error != _lastError)
         self.lastError = error;
-
-    //NOTE: CBLReplicationStatus values needs to match C4ReplicatorActivityLevel!
-    auto status = _status;
-    status.activity = (CBLReplicationActivityLevel)state.level;
-    status.progress = {state.progress.completed, state.progress.total};
-    self.status = status;
-    CBLLog(Sync, @"%@ is %s, progress %llu/%llu",
+    
+    CBLReplicatorActivityLevel level;
+    switch (state.level) {
+        case kC4Stopped:
+            level = kCBLStopped;
+            break;
+        case kC4Idle:
+        case kC4Offline:
+            level = kCBLIdle;
+            break;
+        default:
+            level = kCBLBusy;
+            break;
+    }
+    CBLReplicatorProgress progress = { state.progress.completed, state.progress.total };
+    self.status = [[CBLReplicatorStatus alloc] initWithActivity: level progress: progress];
+    
+    CBLLog(Sync, @"%@ is %s, progress %llu/%llu, error: %@",
            self, kC4ReplicatorActivityLevelNames[state.level],
-           state.progress.completed, state.progress.total);
+           state.progress.completed, state.progress.total,
+           error);
 }
 
-
-@end
-
-
-#pragma mark - CBLDATABASE CATEGORY
-
-
-@implementation CBLDatabase (Replication)
-
-- (CBLReplication*) replicationWithURL: (NSURL*)remoteURL {
-    NSParameterAssert(remoteURL);
-    CBLReplication* repl = [self.replications objectForKey: remoteURL];
-    if (!repl) {
-        repl = [[CBLReplication alloc] initWithDatabase: self
-                                              remoteURL: remoteURL otherDatabase: nil];
-        [self.replications setObject: repl forKey: remoteURL];
-    }
-    return repl;
-}
-
-- (CBLReplication*) replicationWithDatabase: (CBLDatabase*)otherDatabase {
-    NSParameterAssert(otherDatabase);
-    NSParameterAssert(otherDatabase != self);
-    id key = otherDatabase.path;
-    CBLReplication* repl = [self.replications objectForKey: key];
-    if (!repl) {
-        repl = [[CBLReplication alloc] initWithDatabase: self
-                                              remoteURL: nil otherDatabase: otherDatabase];
-        [self.replications setObject: repl forKey: key];
-    }
-    return repl;
-}
 
 @end

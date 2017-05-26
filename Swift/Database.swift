@@ -147,7 +147,7 @@ public final class Database {
         } else {
             _impl = try CBLDatabase(name: name)
         }
-        self.setupDatabaseChangeNotification()
+        self.setupNotificationBridge()
     }
     
 
@@ -291,7 +291,10 @@ public final class Database {
     let _impl : CBLDatabase
     
     
-    func setupDatabaseChangeNotification() {
+    // MARK: Private
+    
+    
+    private func setupNotificationBridge() {
         NotificationCenter.default.addObserver(
             self, selector: #selector(databaseChanged(notification:)),
             name: Notification.Name.cblDatabaseChange, object: _impl)

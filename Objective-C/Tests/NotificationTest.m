@@ -48,6 +48,27 @@
                              handler: ^BOOL(NSNotification *n)
      {
          CBLDatabaseChange* change = n.userInfo[kCBLDatabaseChangesUserInfoKey];
+         AssertEqual(change.documentIDs.count, 1ul);
+         return YES;
+     }];
+    
+    
+    CBLDocument* doc = [[CBLDocument alloc] initWithID: @"doc1"];
+    [doc setObject: @"demo" forKey: @"type"];
+    
+    NSError* error;
+    Assert([_db saveDocument: doc error: &error], @"Error saving: %@", error);
+    
+    [self waitForExpectationsWithTimeout: 5 handler: NULL];
+}
+
+
+- (void) testDatabaseChangeInBatch {
+    [self expectationForNotification: kCBLDatabaseChangeNotification
+                              object: self.db
+                             handler: ^BOOL(NSNotification *n)
+     {
+         CBLDatabaseChange* change = n.userInfo[kCBLDatabaseChangesUserInfoKey];
          AssertEqual(change.documentIDs.count, 10ul);
          return YES;
      }];

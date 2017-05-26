@@ -8,7 +8,7 @@
 
 #import "CBLTestCase.h"
 
-@interface ReplicationTest : CBLTestCase <CBLReplicationDelegate>
+@interface ReplicationTest : CBLTestCase
 @end
 
 
@@ -16,7 +16,6 @@
 {
     CBLDatabase* otherDB;
     CBLReplication* repl;
-    BOOL _stopped;
 }
 
 
@@ -39,52 +38,52 @@
 }
 
 
-- (void) push: (BOOL)push pull: (BOOL)pull {
-    repl = [self.db replicationWithDatabase: otherDB];
-    [self runReplicationWithPush: push pull: pull];
+- (void) push: (BOOL)push pull: (BOOL)pull opts: (NSDictionary*)opts error: (NSInteger) error {
+    CBLReplicatorConfiguration* config = [[CBLReplicatorConfiguration alloc] init];
+    config.database = self.db;
+    config.target = [CBLReplicatorTarget database: otherDB];
+    config.replicatorType = push && pull ? kCBLPushAndPull : (push ? kCBLPush : kCBLPull);
+    config.options = opts;
+    [self runWithConfig: config errorCode: error];
 }
 
 
-- (void) push: (BOOL)push pull: (BOOL)pull URL: (NSString*)urlStr {
-    repl = [self.db replicationWithURL: [NSURL URLWithString: urlStr]];
-    [self runReplicationWithPush: push pull: pull];
+- (void) push: (BOOL)push pull: (BOOL)pull url: (NSString*)url opts: (NSDictionary*)opts
+        error: (NSInteger) error
+{
+    CBLReplicatorConfiguration* config = [[CBLReplicatorConfiguration alloc] init];
+    config.database = self.db;
+    config.target = [CBLReplicatorTarget url: [NSURL URLWithString: url]];
+    config.replicatorType = push && pull ? kCBLPushAndPull : (push ? kCBLPush : kCBLPull);
+    config.options = opts;
+    [self runWithConfig: config errorCode: error];
 }
 
 
-- (void) runReplicationWithPush: (BOOL)push pull: (BOOL)pull {
-    Assert(repl);
-    repl.push = push;
-    repl.pull = pull;
-    repl.delegate = self;
-    XCTestExpectation *x = [self expectationForNotification: kCBLReplicationStatusChangeNotification
+- (void) runWithConfig: (CBLReplicatorConfiguration*)config errorCode: (NSInteger)code {
+    repl = [[CBLReplication alloc] initWithConfig: config];
+    XCTestExpectation *x = [self expectationForNotification: kCBLReplicatorChangeNotification
                                                      object: repl
                                                     handler: ^BOOL(NSNotification *n)
     {
-        return repl.status.activity == kCBLStopped;
+        CBLReplicatorStatus* status =  n.userInfo[kCBLReplicatorStatusUserInfoKey];
+        if (status.activity == kCBLStopped) {
+            NSError* error = n.userInfo[kCBLReplicatorErrorUserInfoKey];
+            if (code != 0)
+                AssertEqual(error.code, code);
+            else
+                AssertNil(error);
+            return YES;
+        }
+        return NO;
     }];
     [repl start];
     [self waitForExpectations: @[x] timeout: 5.0];
 }
 
 
-- (void) replication: (CBLReplication*)replication
-     didChangeStatus: (CBLReplicationStatus)status
-{
-    NSLog(@"replication:didChangestatus:");
-}
-
-
-- (void) replication: (CBLReplication*)replication
-    didStopWithError: (nullable NSError*)error
-{
-    NSLog(@"replication:didStopWithError:");
-}
-
-
-
 - (void)testEmptyPush {
-    [self push: YES pull: NO];
-    AssertNil(repl.lastError);
+    [self push: YES pull: NO opts: nil error: 0];
 }
 
 
@@ -92,25 +91,18 @@
 // on localhost:4984, with a user 'pupshaw' whose password is 'frank'.
 
 - (void) dontTestAuthenticationFailure {
-    repl = [self.db replicationWithURL: [NSURL URLWithString: @"blip://localhost:4984/seekrit"]];
-    [self runReplicationWithPush: NO pull: YES];
-    AssertEqualObjects(repl.lastError.domain, @"WebSocket");
-    AssertEqual(repl.lastError.code, 401);
+    [self push: NO pull: YES url: @"blip://localhost:4984/seekrit" opts: nil error: 401];
 }
 
 
 - (void) dontTestAuthenticatedPullHardcoded {
-    repl = [self.db replicationWithURL: [NSURL URLWithString: @"blip://pupshaw:frank@localhost:4984/seekrit"]];
-    [self runReplicationWithPush: NO pull: YES];
-    AssertNil(repl.lastError);
+    [self push: NO pull: YES url: @"blip://pupshaw:frank@localhost:4984/seekrit" opts: nil error: 0];
 }
 
 
 - (void) dontTestAuthenticatedPull {
-    repl = [self.db replicationWithURL: [NSURL URLWithString: @"blip://localhost:4984/seekrit"]];
-    repl.options = @{@"auth": @{@"username": @"pupshaw", @"password": @"frank"}};
-    [self runReplicationWithPush: NO pull: YES];
-    AssertNil(repl.lastError);
+    NSDictionary* opts = @{@"auth": @{@"username": @"pupshaw", @"password": @"frank"}};
+    [self push: NO pull: YES url: @"blip://localhost:4984/seekrit" opts: opts error: 0];
 }
 
 @end
